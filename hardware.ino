@@ -1,7 +1,3 @@
-#include <LiquidCrystal_I2C.h>
-
-LiquidCrystal_I2C lcd(0x3F, 16, 2); // LCD 객체 생성
-
 // 핀 설정
 const int BUZZER_PIN_FRONT = 4;  // 부저 핀을 4번으로 설정
 const int BUZZER_PIN_BACK = 5;  // 부저 핀을 5번으로 설정
