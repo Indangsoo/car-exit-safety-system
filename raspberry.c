@@ -10,94 +10,84 @@
 #define SERIAL_PORT "/dev/ttyACM0"
 #define BAUD_RATE 9600
 
-#define THRESHOLD_PROBABILITY 20.0
+#define THRESHOLD_PROBABILITY 50.0
 #define THRESHOLD_HEIGHT 240.0
 
-//폴더 darknet 내부에 있다고 가정
-const char *CAM_COMMAND = "sudo v4l2-ctl --device=/dev/video0 --set-fmt-video=width=1920,height=1080,pixelformat=MJPG --stream-mmap --stream-count=1 --stream-to=/home/mkkan/darknet/target.jpg";
-const char *YOLO_COMMAND = "./darknet detector test cfg/coco.data cfg/yolov3-tiny.cfg yolov3-tiny.weights target.jpg -dont_show -ext_output > result.txt";
+#define AREA_THRESHOLD 1000
+#define DISTANCE_THRESHOLD 500
 
-typedef struct {
-    char label[50];
-    int center_x;
-    int center_y;
-    int area;
-} DetectedObject;
-
-#define MAX_OBJECTS 100
-DetectedObject detected_objects[MAX_OBJECTS];
-int detected_count = 0;
-
-void save_detected_object(const char *label, int center_x, int center_y, int area) {
-    // 저장 가능한 최대 객체 수 확인
-    if (detected_count >= MAX_OBJECTS) {
-        printf("객체 저장 공간이 부족합니다!\n");
-        return;
-    }
-
-    // 객체 저장
-    DetectedObject *obj = &detected_objects[detected_count];
-    strncpy(obj->label, label, sizeof(obj->label) - 1);
-    obj->center_x = center_x;
-    obj->center_y = center_y;
-    obj->area = area;
-    detected_count++;
-}
-
-void initialize_detected_objects() {
-    // 객체 수 초기화
-    detected_count = 0;
-
-    // 배열 초기화
-    for (int i = 0; i < MAX_OBJECTS; i++) {
-        DetectedObject *obj = &detected_objects[i];
-        obj->label[0] = '\0'; // 빈 문자열로 초기화
-        obj->center_x = -1;
-        obj->center_y = -1;
-        obj->area = -1;
-    }
-}
-
-// 범위 내 객체 검색 및 넓이 비교 함수
-int find_and_compare_area(const char *label, int center_x, int center_y, int tolerance, int area) {
-    for (int i = 0; i < detected_count; i++) {
-        DetectedObject *obj = &detected_objects[i];
-        
-
-        // 라벨이 같고 중심 좌표가 tolerance 범위 내인지 확인
-        if (strcmp(obj->label, label) == 0 &&
-            abs(obj->center_x - center_x) <= tolerance &&
-            abs(obj->center_y - center_y) <= tolerance) {
-            
-            // 넓이 비교
-            if (obj->area == area) {
-                printf("조건을 만족하는 객체 발견: %s (중심 좌표: %d, %d, 넓이: %d)\n", 
-                       obj->label, obj->center_x, obj->center_y, obj->area);
-                return 1; // 조건 만족
-            } else {
-                printf("조건을 만족하는 객체 발견 (넓이 불일치): %s (중심 좌표: %d, %d, 넓이: %d)\n", 
-                       obj->label, obj->center_x, obj->center_y, obj->area);
-            }
-        }
-    }
-    return 0; // 조건을 만족하는 객체 없음
-}
-
-
-// 시리얼 포트 초기화 함수
-int initialize_serial_connection(const char *port_name, int baud_rate) {
-    int fd = serialOpen(port_name, baud_rate);
-    if (fd < 0) {
-        fprintf(stderr, "Unable to open serial device: %s\n", strerror(errno));
-        return -1;
-    }
-    return fd;
-}
+int fd;
 
 // 메시지 송신 함수
 void send_message(int fd, const char *message) {
     serialPuts(fd, message);
     serialPuts(fd, "\n");
+}
+
+//폴더 darknet 내부에 있다고 가정
+const char *CAM_COMMAND = "sudo v4l2-ctl --device=/dev/video0 --set-fmt-video=width=1920,height=1080,pixelformat=MJPG --stream-mmap --stream-count=1 --stream-to=/home/mkkan/darknet/target.jpg";
+const char *YOLO_COMMAND = "./darknet detector test cfg/coco.data cfg/yolov4-tiny.cfg yolov4-tiny.weights target.jpg -dont_show -ext_output > result.txt";
+
+char before_label[50] = "";
+int before_center_x = -1;
+int before_center_y = -1;
+int before_area = -1;
+
+int capture_count = 0;
+int catch_target = 0;
+
+// 두 점 간의 거리 계산 함수
+double calculateDistance(int x1, int y1, int x2, int y2) {
+    return sqrt(pow(x2 - x1, 2) + pow(y2 - y1, 2));
+}
+
+// 라벨과 중심 좌표, 넓이 비교 및 업데이트 함수
+int isSimilarAndUpdate(const char* new_label, int new_center_x, int new_center_y, int new_area) {
+    // 라벨이 같은지 확인
+    if (strcmp(before_label, new_label) != 0) {
+        return 0;
+    }
+
+    printf("Before: (%d, %d), New: (%d, %d)\n", before_center_x, before_center_y, new_center_x, new_center_y);
+
+    // 중심 좌표 간의 거리 계산
+    double distance = calculateDistance(before_center_x, before_center_y, new_center_x, new_center_y);
+
+    printf("유사 물체 식별 진행: %f\n", distance);
+
+    // 거리 비교 (100 이하인지 확인)
+    if (distance <= DISTANCE_THRESHOLD) {
+        printf("유사 물체 식별 완료. 비교 진행\n");
+
+        catch_target = 1;
+
+        // 넓이 비교
+        if (new_area - before_area > AREA_THRESHOLD) {
+            printf("========================접근 중==========================\n");  // 넓이가 일정 값 이상일 경우 출력
+            send_message(fd, "D");
+        }
+
+        // 조건에 맞으면 기존 변수들을 새로운 값으로 업데이트
+        strcpy(before_label, new_label);
+        before_center_x = new_center_x;
+        before_center_y = new_center_y;
+        before_area = new_area;
+
+        return 1; // 조건에 맞아서 업데이트 했음을 반환
+    }
+
+    return 0; // 조건에 맞지 않으면 false 반환
+}
+
+
+// 시리얼 포트 초기화 함수
+int initialize_serial_connection(const char *port_name, int baud_rate) {
+    fd = serialOpen(port_name, baud_rate);
+    if (fd < 0) {
+        fprintf(stderr, "Unable to open serial device: %s\n", strerror(errno));
+        return -1;
+    }
+    return fd;
 }
 
 // 조건에 맞는 Label인지 확인
@@ -113,7 +103,7 @@ int parse_and_check_line(const char *line) {
     int probability = 0, left_x = 0, top_y = 0, width = 0, height = 0;
 
     // 라인 출력 (디버깅용)
-    printf("%s", line);
+    //printf("%s", line);
 
     // 6개의 값 추출: label, probability, left_x, top_y, width, height
     if (sscanf(line, "%49[^:]: %d%% (left_x: %d top_y: %d width: %d height: %d)", label, &probability, &left_x, &top_y, &width, &height) == 6) {
@@ -123,10 +113,30 @@ int parse_and_check_line(const char *line) {
         if (is_target_label(label) &&
             probability >= THRESHOLD_PROBABILITY &&
             height >= THRESHOLD_HEIGHT) {
+
+            printf("%s", line);
+
             // 중심 좌표 계산
             int center_x = left_x + width / 2;
             int center_y = top_y + height / 2;
+            int area = width * height;
+
             printf("중심 좌표: (%d, %d)\n", center_x, center_y);
+
+            if (capture_count < 1){
+                if(before_area < area){
+                     printf("========================새로운 물체 식별==========================\n");
+                    send_message(fd, "D");
+                    strcpy(before_label, label);
+                    before_center_x = center_x;
+                    before_center_y = center_y;
+                    before_area = area;
+                }
+            } else {
+                printf("저장 값 존재. 비교 실행\n");
+                isSimilarAndUpdate(label, center_x, center_y, area);
+            }
+
             return 1;
         }
     }
@@ -134,7 +144,14 @@ int parse_and_check_line(const char *line) {
     return 0;
 }
 
-void process_detection(int fd) {
+void process_detection() {
+    printf("Before Label: %s\n", before_label);
+    printf("Before Center X: %d\n", before_center_x);
+    printf("Before Center Y: %d\n", before_center_y);
+    printf("Before Area: %d\n", before_area);
+
+    catch_target = 0;
+
     // 카메라 명령 실행
     if (system(CAM_COMMAND) != 0) {
         fprintf(stderr, "카메라 명령 실행 실패\n");
@@ -153,6 +170,10 @@ void process_detection(int fd) {
         return;
     }
 
+    
+    send_message(fd, "S");
+
+
     char line[1024];
     int found = 0;
 
@@ -165,12 +186,27 @@ void process_detection(int fd) {
     }
     fclose(file);
 
+    if(catch_target) {
+        capture_count = 0;
+    }else if(before_area > -1){
+        capture_count++;
+    }
+
+    if(catch_target < 1 && capture_count > 2){
+        strcpy(before_label, "");
+        before_center_x = -1;
+        before_center_y = -1;
+        before_area = -1;
+
+        capture_count = 0;
+    }
+
+    printf("Catch_target: %d\n", catch_target);
+
     if (found) {
         printf("조건을 만족하는 물체가 파일에 존재합니다.\n");
-        send_message(fd, "조건을 만족하는 물체가 감지되었습니다.");
     } else {
         printf("조건을 만족하는 물체가 파일에 없습니다.\n");
-        send_message(fd, "조건을 만족하는 물체가 없습니다.");
     }
 }
 
@@ -198,12 +234,18 @@ int main() {
             } else if (received == 'E') {  // 'E' 명령 수신 시 중지
                 printf("Received 'E'. 촬영 중지...\n");
                 capturing = 0;
+                strcpy(before_label, "");
+                before_center_x = -1;
+                before_center_y = -1;
+                before_area = -1;
+
+                capture_count = 0;
             }
         }
 
         // 촬영 및 YOLO 실행
         if (capturing) {
-            process_detection(fd);
+            process_detection();
             //delay(5000); // 촬영 간격 5초
         }
 
