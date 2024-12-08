@@ -7,6 +7,7 @@
 #include <time.h>
 #include <math.h>
 #include <pthread.h>
+#include <curl/curl.h>
 
 #define SERIAL_PORT "/dev/ttyACM0"
 #define BAUD_RATE 9600
@@ -15,12 +16,47 @@
 #define THRESHOLD_HEIGHT 240.0
 
 #define AREA_THRESHOLD 1000
-#define DISTANCE_THRESHOLD 500
+#define DISTANCE_THRESHOLD 1000
 
 int fd;
 pthread_mutex_t serial_mutex = PTHREAD_MUTEX_INITIALIZER;  // 시리얼 포트 잠금용 mutex
 
 int capturing = 0;
+
+// 현재 시간 문자열을 반환하는 함수
+char* get_current_time_str() {
+    time_t t;
+    struct tm* tm_info;
+    static char time_str[20];  // "YYYY-MM-DD HH:MM:SS" 형식으로 출력
+
+    time(&t);
+    tm_info = localtime(&t);
+
+    strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", tm_info);
+    return time_str;
+}
+
+// HTTP 요청을 보내는 함수
+void send_http_request(const char *url) {
+    CURL *curl;
+    CURLcode res;
+
+    curl_global_init(CURL_GLOBAL_DEFAULT);
+    curl = curl_easy_init();
+    if (curl) {
+        curl_easy_setopt(curl, CURLOPT_URL, url);
+
+        // 요청 보내기
+        res = curl_easy_perform(curl);
+        if (res != CURLE_OK) {
+            fprintf(stderr, "HTTP 요청 실패: %s\n", curl_easy_strerror(res));
+        }
+
+        curl_easy_cleanup(curl);
+    }
+    curl_global_cleanup();
+}
+
 
 // 메시지 송신 함수
 void send_message(int fd, const char *message) {
@@ -212,6 +248,37 @@ void* serial_thread(void* arg) {
                 before_area = -1;
 
                 capture_count = 0;
+            } else if (received == 'O') { 
+
+                printf("Received 'E'. 촬영 중지...\n");
+                capturing = 0;
+                strcpy(before_label, "");
+                before_center_x = -1;
+                before_center_y = -1;
+                before_area = -1;
+
+
+                capture_count = 0;
+
+                printf("Received 'O'. 현재 시간 전송...\n");
+                char url[256];
+                sprintf(url, "http://59.187.251.226:54549/car/open?key=%s", get_current_time_str());
+                send_http_request(url);  // HTTP 요청 보내기
+            } else if (received == 'D') { 
+                printf("Received 'E'. 촬영 중지...\n");
+                capturing = 0;
+                strcpy(before_label, "");
+                before_center_x = -1;
+                before_center_y = -1;
+                before_area = -1;
+
+
+                capture_count = 0;
+
+                printf("Received 'D'. 현재 시간 전송...\n");
+                char url[256];
+                sprintf(url, "http://59.187.251.226:54549/car/danger?key=%s", get_current_time_str());
+                send_http_request(url);  // HTTP 요청 보내기
             }
 
             while (serialDataAvail(fd)) {

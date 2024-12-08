@@ -1,4 +1,5 @@
 #define BUTTON_PIN 2   // 푸시 버튼이 연결된 핀 번호
+#define BUTTON_3_PIN 3 // 새로운 푸시 버튼이 연결된 핀 번호
 #define BUZZER_PIN 4   // 부저가 연결된 핀 번호
 #define LED_PIN 12     // LED가 연결된 핀 번호
 #define LED_D_PIN 13   // "D" 명령어로 제어할 LED 핀 번호
@@ -8,11 +9,14 @@
 
 bool lastButtonState = LOW;  // 버튼이 눌리지 않았을 때의 상태 (내부 풀업 사용으로 기본 HIGH)
 bool currentButtonState = LOW; // 현재 버튼 상태
+bool lastButton3State = HIGH; // 새로운 버튼 상태 (항상 눌려 있는 상태)
+bool currentButton3State = HIGH; // 새로운 버튼 상태
 bool toggleState = true;    // "E"와 "S"를 번갈아 출력하기 위한 상태
 bool scanState = false;
 
 void setup() {
   pinMode(BUTTON_PIN, INPUT_PULLUP); // 내부 풀업 저항을 사용하여 버튼 핀 설정
+  pinMode(BUTTON_3_PIN, INPUT_PULLUP); // 새로운 버튼 핀 설정 (항상 눌려 있는 상태)
   pinMode(BUZZER_PIN, OUTPUT);       // 부저 핀 설정
   pinMode(LED_PIN, OUTPUT);          // LED 핀 설정
   pinMode(LED_D_PIN, OUTPUT);        // "D" LED 핀 설정
@@ -21,7 +25,9 @@ void setup() {
 
 void loop() {
   currentButtonState = digitalRead(BUTTON_PIN); // 버튼 상태 읽기
+  currentButton3State = digitalRead(BUTTON_3_PIN); // 새로운 버튼 상태 읽기
 
+  // 기존 버튼 눌림 처리
   if (currentButtonState == LOW && lastButtonState == HIGH) { // 버튼이 눌릴 때
     toggleState = !toggleState; // 상태를 반전
     if (toggleState) {
@@ -35,6 +41,11 @@ void loop() {
       scanState = true;
       digitalWrite(LED_PIN, HIGH); 
     }
+  }
+
+  // 새로운 버튼이 눌렸을 때 "O"를 시리얼로 출력
+  if (currentButton3State == LOW && lastButton3State == HIGH) { // 새로운 버튼이 눌릴 때
+    Serial.println("O"); // "O" 출력
   }
 
   // 시리얼로 받은 명령에 따른 부저 및 LED_D 동작
@@ -56,6 +67,7 @@ void loop() {
   }
 
   lastButtonState = currentButtonState; // 이전 버튼 상태 업데이트
+  lastButton3State = currentButton3State; // 새로운 버튼 상태 업데이트
 }
 
 void toggleLED() {
