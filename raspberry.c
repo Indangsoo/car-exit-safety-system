@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <time.h>
 #include <math.h>
+#include <pthread.h>
 
 #define SERIAL_PORT "/dev/ttyACM0"
 #define BAUD_RATE 9600
@@ -17,14 +18,19 @@
 #define DISTANCE_THRESHOLD 500
 
 int fd;
+pthread_mutex_t serial_mutex = PTHREAD_MUTEX_INITIALIZER;  // 시리얼 포트 잠금용 mutex
+
+int capturing = 0;
 
 // 메시지 송신 함수
 void send_message(int fd, const char *message) {
+    pthread_mutex_lock(&serial_mutex); // 메시지 송신 전에 잠금
     serialPuts(fd, message);
     serialPuts(fd, "\n");
+    pthread_mutex_unlock(&serial_mutex); // 송신 후 잠금 해제
 }
 
-//폴더 darknet 내부에 있다고 가정
+// 폴더 darknet 내부에 있다고 가정
 const char *CAM_COMMAND = "sudo v4l2-ctl --device=/dev/video0 --set-fmt-video=width=1920,height=1080,pixelformat=MJPG --stream-mmap --stream-count=1 --stream-to=/home/mkkan/darknet/target.jpg";
 const char *YOLO_COMMAND = "./darknet detector test cfg/coco.data cfg/yolov4-tiny.cfg yolov4-tiny.weights target.jpg -dont_show -ext_output > result.txt";
 
@@ -43,42 +49,36 @@ double calculateDistance(int x1, int y1, int x2, int y2) {
 
 // 라벨과 중심 좌표, 넓이 비교 및 업데이트 함수
 int isSimilarAndUpdate(const char* new_label, int new_center_x, int new_center_y, int new_area) {
-    // 라벨이 같은지 확인
     if (strcmp(before_label, new_label) != 0) {
         return 0;
     }
 
     printf("Before: (%d, %d), New: (%d, %d)\n", before_center_x, before_center_y, new_center_x, new_center_y);
 
-    // 중심 좌표 간의 거리 계산
     double distance = calculateDistance(before_center_x, before_center_y, new_center_x, new_center_y);
 
     printf("유사 물체 식별 진행: %f\n", distance);
 
-    // 거리 비교 (100 이하인지 확인)
     if (distance <= DISTANCE_THRESHOLD) {
         printf("유사 물체 식별 완료. 비교 진행\n");
 
         catch_target = 1;
 
-        // 넓이 비교
         if (new_area - before_area > AREA_THRESHOLD) {
-            printf("========================접근 중==========================\n");  // 넓이가 일정 값 이상일 경우 출력
+            printf("========================접근 중==========================\n");
             send_message(fd, "D");
         }
 
-        // 조건에 맞으면 기존 변수들을 새로운 값으로 업데이트
         strcpy(before_label, new_label);
         before_center_x = new_center_x;
         before_center_y = new_center_y;
         before_area = new_area;
 
-        return 1; // 조건에 맞아서 업데이트 했음을 반환
+        return 1;
     }
 
-    return 0; // 조건에 맞지 않으면 false 반환
+    return 0;
 }
-
 
 // 시리얼 포트 초기화 함수
 int initialize_serial_connection(const char *port_name, int baud_rate) {
@@ -102,21 +102,13 @@ int parse_and_check_line(const char *line) {
     char label[50];
     int probability = 0, left_x = 0, top_y = 0, width = 0, height = 0;
 
-    // 라인 출력 (디버깅용)
-    //printf("%s", line);
-
-    // 6개의 값 추출: label, probability, left_x, top_y, width, height
     if (sscanf(line, "%49[^:]: %d%% (left_x: %d top_y: %d width: %d height: %d)", label, &probability, &left_x, &top_y, &width, &height) == 6) {
         printf("추출 결과: %s (확률: %d%%, 위치: (%d, %d), 넓이: %d, 높이: %d)\n", label, probability, left_x, top_y, width, height);
 
-        // 조건 확인
         if (is_target_label(label) &&
             probability >= THRESHOLD_PROBABILITY &&
             height >= THRESHOLD_HEIGHT) {
 
-            printf("%s", line);
-
-            // 중심 좌표 계산
             int center_x = left_x + width / 2;
             int center_y = top_y + height / 2;
             int area = width * height;
@@ -152,13 +144,11 @@ void process_detection() {
 
     catch_target = 0;
 
-    // 카메라 명령 실행
     if (system(CAM_COMMAND) != 0) {
         fprintf(stderr, "카메라 명령 실행 실패\n");
         return;
     }
 
-    // YOLO 명령 실행
     if (system(YOLO_COMMAND) != 0) {
         fprintf(stderr, "YOLO 명령 실행 실패\n");
         return;
@@ -170,18 +160,14 @@ void process_detection() {
         return;
     }
 
-    
     send_message(fd, "S");
-
 
     char line[1024];
     int found = 0;
 
-    // 파일에서 한 줄씩 읽기
     while (fgets(line, sizeof(line), file)) {
-        // 조건을 만족하는 줄이 있는지 확인
         if (parse_and_check_line(line)) {
-            found = 1; // 조건 만족 표시
+            found = 1;
         }
     }
     fclose(file);
@@ -210,28 +196,14 @@ void process_detection() {
     }
 }
 
-int main() {
-    // 시리얼 포트 초기화
-    int fd = initialize_serial_connection(SERIAL_PORT, BAUD_RATE);
-    if (fd < 0) {
-        return 1; // 초기화 실패 시 프로그램 종료
-    }
-
-    printf("시리얼 연결 성공. 명령을 기다립니다...\n");
-
-    // 상태 변수
-    int capturing = 0;
-
-    // 메인 루프
+void* serial_thread(void* arg) {
     while (1) {
-        // 시리얼 입력 대기
         if (serialDataAvail(fd)) {
-            char received = serialGetchar(fd); // 수신 데이터 읽기
-
-            if (received == 'S') {  // 'S' 명령 수신 시 시작
+            char received = serialGetchar(fd);
+            if (received == 'S') {
                 printf("Received 'S'. 촬영 시작...\n");
                 capturing = 1;
-            } else if (received == 'E') {  // 'E' 명령 수신 시 중지
+            } else if (received == 'E') {
                 printf("Received 'E'. 촬영 중지...\n");
                 capturing = 0;
                 strcpy(before_label, "");
@@ -241,18 +213,37 @@ int main() {
 
                 capture_count = 0;
             }
+
+            while (serialDataAvail(fd)) {
+                serialGetchar(fd);
+            }
         }
 
-        // 촬영 및 YOLO 실행
+        delay(100); // 짧은 지연으로 CPU 사용률 절약
+    }
+    return NULL;
+}
+
+int main() {
+    int fd = initialize_serial_connection(SERIAL_PORT, BAUD_RATE);
+    if (fd < 0) {
+        return 1; // 초기화 실패 시 프로그램 종료
+    }
+
+    pthread_t serial_tid;
+    pthread_create(&serial_tid, NULL, serial_thread, NULL); // 시리얼 통신을 처리하는 스레드 생성
+
+    printf("시리얼 연결 성공. 명령을 기다립니다...\n");
+
+    while (1) {
         if (capturing) {
             process_detection();
-            //delay(5000); // 촬영 간격 5초
         }
 
         delay(100); // 짧은 지연으로 CPU 사용률 절약
     }
 
-    // 시리얼 포트 닫기
+    pthread_join(serial_tid, NULL); // 시리얼 스레드 종료 대기
     serialClose(fd);
     return 0;
 }
