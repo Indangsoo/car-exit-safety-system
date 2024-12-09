@@ -22,18 +22,15 @@ int fd;
 pthread_mutex_t serial_mutex = PTHREAD_MUTEX_INITIALIZER;  // 시리얼 포트 잠금용 mutex
 
 int capturing = 0;
+char seconds_str[20]; // 초 단위를 문자열로 저장할 배열
 
 // 현재 시간 문자열을 반환하는 함수
 char* get_current_time_str() {
-    time_t t;
-    struct tm* tm_info;
-    static char time_str[20];  // "YYYY-MM-DD HH:MM:SS" 형식으로 출력
+    time_t seconds;
 
-    time(&t);
-    tm_info = localtime(&t);
-
-    strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", tm_info);
-    return time_str;
+    seconds = time(NULL); // 현재 시간을 초 단위로 가져옴
+    sprintf(seconds_str, "%ld", seconds); // 초 값을 문자열로 변환
+    return seconds_str;
 }
 
 // HTTP 요청을 보내는 함수
